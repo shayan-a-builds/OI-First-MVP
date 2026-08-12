@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 import streamlit as st
 from transformer_lens import HookedTransformer
+from typeguard import value
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 VECTORS_PATH = Path(__file__).parent / "steering_vectors.pt"
@@ -62,7 +63,8 @@ def generate(model, vectors, prompt: str, apply_steering: bool, alpha: float, ma
     device = model.cfg.device
 
     def hook_fn(value, hook):
-        vec = vectors[STEER_LAYER]["raw"].to(device)
+    # Dynamically match both device AND precision (bfloat16) of the live activation
+        vec = vectors[STEER_LAYER]["raw"].to(device=value.device, dtype=value.dtype)
         value[:, :, :] += alpha * vec
         return value
 
