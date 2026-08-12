@@ -32,7 +32,7 @@ STEER_ALPHA = 1.0  # the "Goldilocks zone" identified by the alpha sweep
 @st.cache_resource(show_spinner="Loading Qwen2.5-1.5B-Instruct...")
 def load_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    return HookedTransformer.from_pretrained(MODEL_NAME, device=device)
+    return HookedTransformer.from_pretrained(MODEL_NAME, device=device, dtype="float16")
 
 
 @st.cache_resource(show_spinner="Loading steering vectors...")
