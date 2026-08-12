@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 from transformer_lens import HookedTransformer
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 TRUTH_PROMPT = "The capital of France is Paris."
 FALSE_PROMPT = "The capital of France is Banana."
 OUT_PATH = Path(__file__).parent / "steering_vectors.pt"

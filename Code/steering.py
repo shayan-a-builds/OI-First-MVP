@@ -22,14 +22,14 @@ import torch
 import streamlit as st
 from transformer_lens import HookedTransformer
 
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 VECTORS_PATH = Path(__file__).parent / "steering_vectors.pt"
 
 STEER_LAYER = 10
 STEER_ALPHA = 1.0  # the "Goldilocks zone" identified by the alpha sweep
 
 
-@st.cache_resource(show_spinner="Loading Qwen2.5-1.5B-Instruct...")
+@st.cache_resource(show_spinner="Loading Qwen2.5-0.5B-Instruct...")
 def load_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     return HookedTransformer.from_pretrained(MODEL_NAME, device=device, dtype="float16")
