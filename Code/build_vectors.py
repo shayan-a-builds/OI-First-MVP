@@ -30,7 +30,9 @@ OUT_PATH = Path(__file__).parent / "steering_vectors.pt"
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = HookedTransformer.from_pretrained_no_processing(MODEL_NAME, device=device, dtype="float16")
+    model = HookedTransformer.from_pretrained_no_processing(
+        MODEL_NAME, device=device, dtype="bfloat16", low_cpu_mem_usage=True
+    )
 
     _, cache_truth = model.run_with_cache(TRUTH_PROMPT)
     _, cache_false = model.run_with_cache(FALSE_PROMPT)
