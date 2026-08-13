@@ -1,0 +1,9 @@
+Project Idea/
+Project Understanding/
+.git/
+.devcontainer/
+Code/mvp/
+Code/.mvp/
+Code/__pycache__/
+Code/.env
+README.md
