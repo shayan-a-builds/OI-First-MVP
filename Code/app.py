@@ -18,7 +18,7 @@ vectors = steering.load_vectors()
 
 with st.expander("Advanced settings"):
     alpha = st.slider(
-        "Steering strength (alpha)", -2.0, 5.0, steering.STEER_ALPHA, 0.5,
+        "Steering strength (alpha)", -2.0, 5.0, steering.STEER_ALPHA, 0.25,
         help="1.0 is the validated 'Goldilocks zone' from the alpha sweep. "
              "Negative values intentionally push the model toward hallucination.",
     )
