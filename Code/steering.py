@@ -22,7 +22,7 @@ import torch
 import streamlit as st
 from transformer_lens import HookedTransformer
 
-MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 VECTORS_PATH = Path(__file__).parent / "steering_vectors.pt"
 
 STEER_LAYER = 10

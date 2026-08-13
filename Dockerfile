@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download model weights at build time so Cloud Run cold starts never
 # hit the network -- only the local from_pretrained compute cost remains.
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-0.5B-Instruct')"
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-1.5B-Instruct')"
 
 COPY Code/app.py Code/steering.py Code/steering_vectors.pt ./
 
