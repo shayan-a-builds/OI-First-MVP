@@ -16,6 +16,7 @@ uses the same measurement method, but the other layers are exploratory /
 comparative, not individually proven causal levers.
 """
 
+import threading
 from pathlib import Path
 
 import torch
@@ -28,8 +29,15 @@ VECTORS_PATH = Path(__file__).parent / "steering_vectors.pt"
 STEER_LAYER = 10
 STEER_ALPHA = 1.0  # the "Goldilocks zone" identified by the alpha sweep
 
+# st.cache_resource makes `model` a single object shared by every visitor on
+# this instance. TransformerLens hooks mutate that shared model's hook state,
+# so overlapping requests (two visitors, or a rerun overlapping a prior one)
+# can interleave a hook add/remove and corrupt each other's activation cache.
+# Serializing generate+score prevents that.
+_inference_lock = threading.Lock()
 
-@st.cache_resource(show_spinner="Loading Qwen2.5-0.5B-Instruct...")
+
+@st.cache_resource(show_spinner=f"Loading {MODEL_NAME}...")
 def load_model():
     device = "cpu"
     return HookedTransformer.from_pretrained_no_processing(
@@ -86,8 +94,9 @@ def run(model, vectors, prompt: str, apply_steering: bool, alpha: float = STEER_
     Returns (generated_text, headline_risk, layer_risk_array) where
     layer_risk_array is ordered by layer index (0..n_layers-1).
     """
-    text = generate(model, vectors, prompt, apply_steering, alpha, max_new_tokens)
-    risks = compute_layer_risks(model, vectors, text)
+    with _inference_lock:
+        text = generate(model, vectors, prompt, apply_steering, alpha, max_new_tokens)
+        risks = compute_layer_risks(model, vectors, text)
     headline = risks[STEER_LAYER]
     layer_risk_array = [risks[layer] for layer in sorted(risks)]
     return text, headline, layer_risk_array
