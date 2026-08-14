@@ -58,12 +58,13 @@ if generate_clicked:
         st.warning("Please enter a prompt before submitting.")
     else:
         with st.spinner("Generating and scoring..."):
-            text, headline, layer_risks = steering.run(
+            text, headline, layer_risks, headline_raw = steering.run(
                 model, vectors, prompt, apply_steering=False, max_new_tokens=max_new_tokens
             )
         st.session_state.prompt = prompt
         st.session_state.output = text
         st.session_state.headline_risk = headline
+        st.session_state.headline_raw = headline_raw
         st.session_state.layer_risk_array = layer_risks
         st.session_state.pop("steered_output", None)
 
@@ -71,13 +72,20 @@ with col2:
     st.subheader("2. Hallucination Risk")
     if "headline_risk" in st.session_state:
         score = st.session_state.headline_risk
+        raw_score = st.session_state.get("headline_raw", score)
         st.metric(
             label=f"Layer {steering.STEER_LAYER} Risk Score",
             value=f"{score:.2f}",
             delta="High Risk" if score > 0.5 else "Low Risk",
             delta_color="inverse",
         )
-        st.progress(score)
+        st.progress(min(max(score, 0.0), 1.0))
+        if raw_score > 1.0:
+            st.caption(
+                f"Uncapped score **{raw_score:.2f}**, past the false anchor and off the "
+                "0-1 scale. The gauge pins at 1.00 here, so use the uncapped number to "
+                "compare two answers that both look this false."
+            )
 
         st.caption(
             f"Per-layer risk profile. Steering is applied at layer {steering.STEER_LAYER}, "
@@ -115,22 +123,51 @@ if "output" in st.session_state:
 
     if stop_clicked:
         with st.spinner("Injecting steering vector and regenerating..."):
-            steered_text, steered_headline, steered_layer_risks = steering.run(
+            steered_text, steered_headline, steered_layer_risks, steered_raw = steering.run(
                 model, vectors, st.session_state.prompt,
                 apply_steering=True, alpha=alpha, max_new_tokens=max_new_tokens,
             )
         st.session_state.steered_output = steered_text
         st.session_state.steered_headline_risk = steered_headline
+        st.session_state.steered_raw = steered_raw
         st.session_state.steered_layer_risk_array = steered_layer_risks
 
     if "steered_output" in st.session_state:
+        before_raw = st.session_state.headline_raw
+        after_raw = st.session_state.steered_raw
+        # The gauge is capped at 1.00, so on heavily false-looking text both
+        # readings pin there and the visible delta is 0.00 even when the
+        # internal state moved a long way. Fall back to the uncapped score
+        # for the delta whenever either side is off the scale.
+        off_scale = before_raw > 1.0 or after_raw > 1.0
+
         before_col, after_col = st.columns(2)
         with before_col:
             st.markdown("**Before (unsteered)**")
             st.write(st.session_state.output)
             st.metric("Risk", f"{st.session_state.headline_risk:.2f}")
+            if off_scale:
+                st.caption(f"Uncapped score: **{before_raw:.2f}**")
         with after_col:
             st.markdown("**After (steered)**")
             st.write(st.session_state.steered_output)
-            delta = st.session_state.steered_headline_risk - st.session_state.headline_risk
-            st.metric("Risk", f"{st.session_state.steered_headline_risk:.2f}", delta=f"{delta:+.2f}", delta_color="inverse")
+            if off_scale:
+                delta = after_raw - before_raw
+                st.metric(
+                    "Risk", f"{st.session_state.steered_headline_risk:.2f}",
+                    delta=f"{delta:+.2f} uncapped", delta_color="inverse",
+                )
+                st.caption(f"Uncapped score: **{after_raw:.2f}**")
+            else:
+                delta = st.session_state.steered_headline_risk - st.session_state.headline_risk
+                st.metric(
+                    "Risk", f"{st.session_state.steered_headline_risk:.2f}",
+                    delta=f"{delta:+.2f}", delta_color="inverse",
+                )
+
+        if off_scale:
+            st.caption(
+                "Both answers score past the false anchor, so the 0-1 gauge pins at 1.00 "
+                "for each. The uncapped score is the same measurement without the ceiling, "
+                "and it still separates them, which is why the delta above uses it."
+            )

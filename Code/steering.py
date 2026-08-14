@@ -98,13 +98,20 @@ def _hook_name(layer: int) -> str:
     return f"blocks.{layer}.hook_resid_post"
 
 
-def compute_layer_risks(model, vectors, prompt: str, text: str) -> dict[int, float]:
-    """Run `text` through the model and return {layer: risk in [0, 1]}.
+def compute_layer_risks(model, vectors, prompt: str, text: str):
+    """Run `text` through the model and score it against every layer's ruler.
 
-    `text` is the full prompt+generation string `generate()` returns. The
-    risk for each layer is the mean per-token risk over the last
+    `text` is the full prompt+generation string `generate()` returns. Each
+    layer's score is the mean per-token score over the last
     RISK_WINDOW_TOKENS tokens of the *generated* span (fewer if generation
     stopped before using its full token budget), not a single last token.
+
+    Returns (risks, unclamped), both {layer: float}. `risks` is the 0-1
+    score shown on the gauge. `unclamped` is that same score before
+    clamping, and it matters: text sitting well past the false anchor
+    scores above 1.0, so two answers at genuinely different distances
+    (e.g. 2.89 and 3.13) both display as 1.00. Reporting only the clamped
+    value makes a real change look like no change at all.
     """
     _, cache = model.run_with_cache(text)
     prompt_len = model.to_tokens(prompt).shape[1]
@@ -112,15 +119,16 @@ def compute_layer_risks(model, vectors, prompt: str, text: str) -> dict[int, flo
     n_generated = max(total_len - prompt_len, 1)
     window = min(RISK_WINDOW_TOKENS, n_generated)
 
-    risks = {}
+    risks, unclamped = {}, {}
     for layer, v in vectors.items():
         acts = cache[_hook_name(layer)][0, -window:, :].float().cpu()  # (window, d_model)
         unit = v["unit"]
         raw = (acts - v["mid"]) @ unit  # (window,)
         t = raw / v["half_span"] if v["half_span"] else torch.zeros_like(raw)
-        per_token_risk = ((1 - t) / 2).clamp(0.0, 1.0)
-        risks[layer] = per_token_risk.mean().item()
-    return risks
+        per_token = (1 - t) / 2
+        unclamped[layer] = per_token.mean().item()
+        risks[layer] = per_token.clamp(0.0, 1.0).mean().item()
+    return risks, unclamped
 
 
 def generate(model, vectors, prompt: str, apply_steering: bool, alpha: float, max_new_tokens: int) -> str:
@@ -168,12 +176,15 @@ def generate(model, vectors, prompt: str, apply_steering: bool, alpha: float, ma
 def run(model, vectors, prompt: str, apply_steering: bool, alpha: float = STEER_ALPHA, max_new_tokens: int = 40):
     """Generate (optionally steered) and score the result.
 
-    Returns (generated_text, headline_risk, layer_risk_array) where
+    Returns (generated_text, headline_risk, layer_risk_array, headline_raw).
     layer_risk_array is ordered by layer index (0..n_layers-1).
+    headline_raw is the unclamped headline score, so callers can show real
+    movement even when both readings pin the gauge at 1.00.
     """
     with _inference_lock:
         text = generate(model, vectors, prompt, apply_steering, alpha, max_new_tokens)
-        risks = compute_layer_risks(model, vectors, prompt, text)
+        risks, unclamped = compute_layer_risks(model, vectors, prompt, text)
     headline = risks[STEER_LAYER]
+    headline_raw = unclamped[STEER_LAYER]
     layer_risk_array = [risks[layer] for layer in sorted(risks)]
-    return text, headline, layer_risk_array
+    return text, headline, layer_risk_array, headline_raw
