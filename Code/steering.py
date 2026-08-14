@@ -8,12 +8,40 @@ midpoint to the truth anchor along the vector's own direction). A live
 activation's projection onto that axis, relative to those two points, gives
 a score in [-1, 1] where +1 lands exactly on the truth anchor and -1 lands
 exactly on the false anchor. Flipping and rescaling that into [0, 1] gives
-the risk score: 0 = fully truth-like, 1 = fully false/hallucination-like.
+a per-token risk: 0 = fully truth-like, 1 = fully false/hallucination-like.
+
+The score shown to the user is the mean of that per-token risk over the
+last RISK_WINDOW_TOKENS *generated* tokens (fewer if generation stopped
+early), not just the single final token. A single last token can land on an
+arbitrary, possibly mid-word cutoff that says nothing about whether the
+answer itself was true; averaging over a short trailing window is stable
+against that without smoothing away real drift over a long answer.
 
 Only layer 10 has been causally validated (the alpha sweep in the project
 README) -- steering is only ever applied there. Every layer's risk score
 uses the same measurement method, but the other layers are exploratory /
 comparative, not individually proven causal levers.
+
+Steering is closed-loop, not an open-loop additive nudge. A prior version
+added a fixed vector (alpha * raw) to every token's activation, which faded
+in practice: the more tokens were already generated, the less that fixed
+addition mattered against the model's growing narrative commitment to its
+own prior output. Measurement (see test used to justify this) showed the
+residual-stream norm at layer 10 does NOT reliably grow with token
+position, so a fixed nudge shrinking relative to a growing vector isn't the
+mechanism -- the drift is attention-driven momentum, not dilution. Either
+way, the fix is the same: instead of adding a fixed offset, every hook call
+now reads the activation's current signed position on the truth<->false
+axis and resets it to an exact target (alpha * half_span past the
+midpoint, so alpha=1.0 means "sit exactly at the average truth anchor").
+Because the correction is recomputed fresh at every token from the
+activation's actual current position, it cannot fade the way a blindly
+accumulated fixed nudge can.
+
+The correction only ever touches newly-generated token positions, never the
+prompt's own encoding (see the pos>1 check in generate()'s hook_fn) -- an
+early test showed steering the whole prompt pass too could scramble what
+the model understood the question to be, not just its answer.
 """
 
 import threading
@@ -27,7 +55,24 @@ MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 VECTORS_PATH = Path(__file__).parent / "steering_vectors.pt"
 
 STEER_LAYER = 10
-STEER_ALPHA = 1.0  # the "Goldilocks zone" identified by the alpha sweep
+
+# Default steering strength, deliberately 0 (no intervention).
+#
+# The 11-layer sweep (alpha_sweep.py) found that steering's *sign* is not
+# reliable at this layer: pushing toward the truth anchor produces false
+# claims about as often as pushing toward the false anchor does. Shipping a
+# non-zero default would mean the UI's steering button silently degrades the
+# answer on its own example prompt, which is the opposite of what it claims.
+# So the app starts neutral and lets the user pick a direction and magnitude.
+#
+# For reference when exploring: nothing visible happens below roughly +-5,
+# the effect is clearest around +-8, and past roughly +-10 output degrades
+# into repetition. See Case Study.md for the full result.
+#
+# generate() treats 0 as steering off rather than as "target the midpoint",
+# which it would otherwise mean and which is not a no-op.
+STEER_ALPHA = 0.0
+RISK_WINDOW_TOKENS = 10  # trailing generated tokens averaged into the risk score
 
 # st.cache_resource makes `model` a single object shared by every visitor on
 # this instance. TransformerLens hooks mutate that shared model's hook state,
@@ -53,31 +98,63 @@ def _hook_name(layer: int) -> str:
     return f"blocks.{layer}.hook_resid_post"
 
 
-def compute_layer_risks(model, vectors, text: str) -> dict[int, float]:
-    """Run `text` through the model and return {layer: risk in [0, 1]}."""
+def compute_layer_risks(model, vectors, prompt: str, text: str) -> dict[int, float]:
+    """Run `text` through the model and return {layer: risk in [0, 1]}.
+
+    `text` is the full prompt+generation string `generate()` returns. The
+    risk for each layer is the mean per-token risk over the last
+    RISK_WINDOW_TOKENS tokens of the *generated* span (fewer if generation
+    stopped before using its full token budget), not a single last token.
+    """
     _, cache = model.run_with_cache(text)
-    device = model.cfg.device
+    prompt_len = model.to_tokens(prompt).shape[1]
+    total_len = cache[_hook_name(0)].shape[1]
+    n_generated = max(total_len - prompt_len, 1)
+    window = min(RISK_WINDOW_TOKENS, n_generated)
 
     risks = {}
     for layer, v in vectors.items():
-        act = cache[_hook_name(layer)][0, -1, :].float().cpu()
+        acts = cache[_hook_name(layer)][0, -window:, :].float().cpu()  # (window, d_model)
         unit = v["unit"]
-        raw = torch.dot(unit, act - v["mid"]).item()
-        t = raw / v["half_span"] if v["half_span"] else 0.0
-        risks[layer] = min(max((1 - t) / 2, 0.0), 1.0)
+        raw = (acts - v["mid"]) @ unit  # (window,)
+        t = raw / v["half_span"] if v["half_span"] else torch.zeros_like(raw)
+        per_token_risk = ((1 - t) / 2).clamp(0.0, 1.0)
+        risks[layer] = per_token_risk.mean().item()
     return risks
 
 
 def generate(model, vectors, prompt: str, apply_steering: bool, alpha: float, max_new_tokens: int) -> str:
-    device = model.cfg.device
+    v = vectors[STEER_LAYER]
+    target = alpha * v["half_span"]
 
     def hook_fn(value, hook):
-    # Dynamically match both device AND precision (bfloat16) of the live activation
-        vec = vectors[STEER_LAYER]["raw"].to(device=value.device, dtype=value.dtype)
-        value[:, :, :] += alpha * vec
-        return value
+        # With the KV cache, the first call processes the whole prompt at once
+        # (pos > 1); every call after that processes exactly one new token
+        # (pos == 1). Only correct newly-generated tokens -- correcting the
+        # prompt pass too would overwrite the model's own encoding of the
+        # question (e.g. "France") with a generic truth/false template,
+        # which can corrupt what's actually being asked rather than just
+        # nudging the answer.
+        if value.shape[1] > 1:
+            return value
 
-    fwd_hooks = [(_hook_name(STEER_LAYER), hook_fn)] if apply_steering else []
+        # Dynamically match both device AND precision (bfloat16) of the live activation
+        unit = v["unit"].to(device=value.device, dtype=value.dtype)
+        mid = v["mid"].to(device=value.device, dtype=value.dtype)
+        # Closed-loop: read this token's current signed distance from mid
+        # along the truth<->false axis, then correct it to land exactly on
+        # `target` instead of adding a fixed offset that can't hold as more
+        # tokens accumulate their own momentum.
+        proj = (value - mid) @ unit  # (batch, pos)
+        correction = (target - proj).unsqueeze(-1) * unit
+        return value + correction
+
+    # alpha == 0 means steering off, not "steer to the midpoint". Without this
+    # the controller would still pin every generated token's projection to
+    # exactly `mid`, which is an active intervention and measurably changes the
+    # output. The slider therefore has a genuine off position at 0.
+    steering_on = apply_steering and alpha != 0
+    fwd_hooks = [(_hook_name(STEER_LAYER), hook_fn)] if steering_on else []
     with model.hooks(fwd_hooks=fwd_hooks):
         output = model.generate(
             prompt,
@@ -96,7 +173,7 @@ def run(model, vectors, prompt: str, apply_steering: bool, alpha: float = STEER_
     """
     with _inference_lock:
         text = generate(model, vectors, prompt, apply_steering, alpha, max_new_tokens)
-        risks = compute_layer_risks(model, vectors, text)
+        risks = compute_layer_risks(model, vectors, prompt, text)
     headline = risks[STEER_LAYER]
     layer_risk_array = [risks[layer] for layer in sorted(risks)]
     return text, headline, layer_risk_array
