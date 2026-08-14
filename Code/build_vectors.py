@@ -5,8 +5,11 @@ For every layer of the model, this measures the residual-stream activation
 sentence, across all 50 contrastive pairs in contrastive_pairs.py, and stores:
 
   raw        mean(act_truth) - mean(act_false), the difference-of-means
-             direction (used to steer generation: value += alpha * raw)
-  unit       raw normalized to unit length (used to score risk on new text)
+             direction (kept for reference/debugging; steering.py's
+             closed-loop controller steers using unit/mid/half_span below,
+             not raw directly)
+  unit       raw normalized to unit length (used to score risk, and as the
+             axis steering.py's closed-loop controller corrects along)
   mid        midpoint between the two mean anchors
   half_span  distance from mid to the truth anchor along `unit`
 
