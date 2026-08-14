@@ -3,13 +3,24 @@ import streamlit as st
 
 import steering
 
-st.set_page_config(page_title="Hallucination Kill-Switch", page_icon="\U0001f9e0", layout="wide")
+st.set_page_config(page_title="Hallucination Risk Gauge", page_icon="\U0001f9e0", layout="wide")
 
-st.title("\U0001f9e0 Hallucination Kill-Switch")
+st.title("\U0001f9e0 Hallucination Risk Gauge")
 st.markdown(
-    "Operational interpretability demo: watch a live **hallucination risk** score for "
-    f"`{steering.MODEL_NAME}`, then hit the kill-switch to steer the model's internal "
-    "state back toward truthfulness in real time."
+    "Operational interpretability demo: watch a live **hallucination risk** score read "
+    f"straight out of the internal state of `{steering.MODEL_NAME}` as it writes, then "
+    "push that internal state along the same truth/false axis and watch what changes."
+)
+st.info(
+    "**What's proven and what isn't.** The gauge is the validated part: it reads a "
+    "direction built from 162 hand-checked true/false sentence pairs across 9 topics, "
+    "and it correctly ranks pairs it was never built from 92% of the time. The steering "
+    "wheel is the **experimental** part. An 11-layer sweep found it does move the model, "
+    "but not reliably in the direction you ask for: chemistry and biology facts never "
+    "changed at all, and where capital-city facts did change it was often toward the "
+    "false answer. Steering starts at 0 so you can try it yourself and see. "
+    "This is a research instrument, not a hallucination fix.",
+    icon="\U0001f9ea",
 )
 st.divider()
 
@@ -18,9 +29,12 @@ vectors = steering.load_vectors()
 
 with st.expander("Advanced settings"):
     alpha = st.slider(
-        "Steering strength (alpha)", -2.0, 5.0, steering.STEER_ALPHA, 0.25,
-        help="1.0 is the validated 'Goldilocks zone' from the alpha sweep. "
-             "Negative values intentionally push the model toward hallucination.",
+        "Steering strength (alpha)", -12.0, 12.0, steering.STEER_ALPHA, 0.25,
+        help="Starts at 0, which applies no steering at all. Nothing visible happens until "
+             "roughly +-5, the effect is clearest around +-8, and past roughly +-10 the "
+             "output degrades into repetition. Positive aims at the truth anchor and "
+             "negative at the false anchor, but the 11-layer sweep found that sign is "
+             "unreliable here, so try both.",
     )
     max_new_tokens = st.slider("Max new tokens", 10, 80, 40, 5)
 
@@ -32,6 +46,10 @@ with col1:
         "Enter a prompt where models tend to hallucinate or stall:",
         height=120,
         value="The capital of France is",
+        help="The risk gauge works on any prompt. Steering visibly changes the *fact* "
+             "mainly on capital-city style prompts -- on other topics you will usually "
+             "see tone and framing shift while the fact itself stays put. That gap is a "
+             "finding of this project, not a bug to work around.",
     )
     generate_clicked = st.button("Generate & Analyze Risk", type="primary")
 
@@ -62,8 +80,10 @@ with col2:
         st.progress(score)
 
         st.caption(
-            f"Per-layer risk profile (layer {steering.STEER_LAYER} is the only "
-            "causally-validated steering point; other layers are shown for comparison)."
+            f"Per-layer risk profile. Steering is applied at layer {steering.STEER_LAYER}, "
+            "the layer where the sweep found changes to the *fact itself* rather than just "
+            "its wording. Layers 13-17 measure truth more accurately (layer 15 is the best "
+            "at 92%) but steering them shifts tone and confidence while the fact stays put."
         )
         df = pd.DataFrame(
             {"Layer": list(range(len(st.session_state.layer_risk_array))),
@@ -79,7 +99,19 @@ if "output" in st.session_state:
     st.subheader("3. Model Output")
     st.info(st.session_state.output)
 
-    stop_clicked = st.button("\U0001f6d1 Stop Hallucinating!", type="primary")
+    stop_clicked = st.button("\U0001f9ea Use AI Steering Wheel", type="primary")
+    st.caption(
+        "Set a steering strength in Advanced settings first (it starts at 0, which does "
+        "nothing). Positive pushes toward the truth anchor, negative toward the false "
+        "anchor, but the sweep found that sign is not reliable at this layer -- both "
+        "directions can produce false claims. Watching that happen is the experiment."
+    )
+
+    if stop_clicked and alpha == 0:
+        st.warning(
+            "Steering strength is 0, so this will reproduce the unsteered answer. "
+            "Open Advanced settings and move the slider past +-5 to see an effect."
+        )
 
     if stop_clicked:
         with st.spinner("Injecting steering vector and regenerating..."):
